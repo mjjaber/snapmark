@@ -72,7 +72,7 @@ from PyQt6.QtGui import QScreen   # noqa: E402 (re-import for clarity)
 
 class SelectionOverlay(QWidget):
     # Emits *physical* pixel coordinates ready for mss
-    area_selected = pyqtSignal(int, int, int, int)
+    area_selected = pyqtSignal(int, int, int, int, float)  # x, y, w, h, dpr
     cancelled     = pyqtSignal()
 
     def __init__(self, screen: QScreen):
@@ -193,7 +193,7 @@ class SelectionOverlay(QWidget):
         py  = int(sg.y() + local_rect.y()      * dpr)
         pw  = int(local_rect.width()            * dpr)
         ph  = int(local_rect.height()           * dpr)
-        return px, py, pw, ph
+        return px, py, pw, ph, dpr  # include dpr so canvas can display at logical size
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -219,8 +219,17 @@ class SelectionOverlay(QWidget):
 class Canvas(QWidget):
     def __init__(self, pixmap: QPixmap):
         super().__init__()
-        self._base    = pixmap.copy()
-        self._overlay = QPixmap(pixmap.size())
+
+        # Scale the pixmap down to logical (device-independent) size so the
+        # canvas isn't zoomed in on HiDPI screens.  The DPR is already baked
+        # into the pixmap via setDevicePixelRatio() before Canvas is created.
+        logical_size = pixmap.deviceIndependentSize().toSize()
+        self._base    = pixmap.scaled(
+            logical_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._overlay = QPixmap(self._base.size())
         self._overlay.fill(Qt.GlobalColor.transparent)
 
         self._tool      = "arrow"
@@ -233,7 +242,7 @@ class Canvas(QWidget):
 
         self._history: list[QPixmap] = []
 
-        self.setFixedSize(pixmap.size())
+        self.setFixedSize(self._base.size())
         self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
 
     # ── properties ────────────────────────────────────────────────────────────
@@ -619,13 +628,13 @@ class SnapMarkApp:
 
     # ── screenshot capture ────────────────────────────────────────────────────
 
-    def _on_area(self, x: int, y: int, w: int, h: int):
+    def _on_area(self, x: int, y: int, w: int, h: int, dpr: float):
         # Hide all other overlays immediately (user picked a region on one screen)
         self._hide_all()
         # Short delay so overlays fully vanish before we grab pixels
-        QTimer.singleShot(80, lambda: self._capture(x, y, w, h))
+        QTimer.singleShot(80, lambda: self._capture(x, y, w, h, dpr))
 
-    def _capture(self, x: int, y: int, w: int, h: int):
+    def _capture(self, x: int, y: int, w: int, h: int, dpr: float):
         # x, y, w, h are already in *physical* pixels — conversion was done
         # inside SelectionOverlay._to_physical() using per-screen DPR.
         with mss.MSS() as sct:
@@ -642,6 +651,8 @@ class SnapMarkApp:
             )
 
         pixmap = QPixmap.fromImage(img)
+        # Tag the pixmap with its DPR so Canvas can display it at logical size
+        pixmap.setDevicePixelRatio(dpr)
         win = AnnotationWindow(pixmap)
         win.show()
         self._windows.append(win)
