@@ -16,7 +16,7 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
-    QPushButton, QSpinBox, QLabel,
+    QPushButton, QSpinBox, QLabel, QLineEdit,
     QSystemTrayIcon, QMenu,
     QFileDialog, QColorDialog,
     QScrollArea, QFrame,
@@ -217,12 +217,14 @@ class SelectionOverlay(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Canvas(QWidget):
+    """
+    Drawing canvas supporting:
+      rect · ellipse · line · arrow · pencil · highlight · text · step-number
+    """
+
     def __init__(self, pixmap: QPixmap):
         super().__init__()
 
-        # Scale the pixmap down to logical (device-independent) size so the
-        # canvas isn't zoomed in on HiDPI screens.  The DPR is already baked
-        # into the pixmap via setDevicePixelRatio() before Canvas is created.
         logical_size = pixmap.deviceIndependentSize().toSize()
         self._base    = pixmap.scaled(
             logical_size,
@@ -233,12 +235,17 @@ class Canvas(QWidget):
         self._overlay.fill(Qt.GlobalColor.transparent)
 
         self._tool      = "arrow"
-        self._color     = QColor("#e53935")   # vivid red default
+        self._color     = QColor("#e53935")
         self._thickness = 3
 
         self._p1 = QPoint()
         self._p2 = QPoint()
         self._drawing = False
+
+        self._path: list[QPoint] = []      # pencil / highlight stroke
+        self._step_n  = 1                  # auto-incrementing step counter
+        self._text_widget: QLineEdit | None = None
+        self._text_pos  = QPoint()
 
         self._history: list[QPixmap] = []
 
@@ -248,19 +255,26 @@ class Canvas(QWidget):
     # ── properties ────────────────────────────────────────────────────────────
 
     @property
-    def tool(self):        return self._tool
+    def tool(self):         return self._tool
     @tool.setter
-    def tool(self, v):     self._tool = v
+    def tool(self, v):
+        self._tool = v
+        # commit any open text box when switching tools
+        if v != "text" and self._text_widget:
+            self._commit_text()
 
     @property
-    def color(self):       return self._color
+    def color(self):        return self._color
     @color.setter
-    def color(self, v):    self._color = v
+    def color(self, v):     self._color = v
 
     @property
-    def thickness(self):   return self._thickness
+    def thickness(self):    return self._thickness
     @thickness.setter
     def thickness(self, v): self._thickness = v
+
+    def reset_step(self):
+        self._step_n = 1
 
     # ── paint ─────────────────────────────────────────────────────────────────
 
@@ -268,94 +282,230 @@ class Canvas(QWidget):
         p = QPainter(self)
         p.drawPixmap(0, 0, self._base)
         p.drawPixmap(0, 0, self._overlay)
+
         if self._drawing:
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            self._apply_pen(p)
-            self._draw_shape(p, self._p1, self._p2)
+            if self._tool in ("pencil", "highlight"):
+                self._paint_path(p, self._path)
+            elif self._tool == "step":
+                self._paint_step(p, self._p1, self._step_n)
+            else:
+                self._apply_pen(p)
+                self._draw_shape(p, self._p1, self._p2)
 
     # ── mouse ─────────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton:
-            self._p1 = self._p2 = ev.pos()
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+
+        # commit any open text box first
+        if self._text_widget:
+            self._commit_text()
+            return
+
+        pos = ev.pos()
+
+        if self._tool == "text":
+            self._start_text_input(pos)
+
+        elif self._tool == "step":
+            # step is click-to-place, not drag
+            self._p1 = pos
             self._drawing = True
-            self.update()
+            self._commit_step(pos)
+            self._drawing = False
+
+        elif self._tool in ("pencil", "highlight"):
+            self._path = [pos]
+            self._drawing = True
+
+        else:
+            self._p1 = self._p2 = pos
+            self._drawing = True
+
+        self.update()
 
     def mouseMoveEvent(self, ev):
-        if self._drawing:
+        if not self._drawing:
+            return
+        if self._tool in ("pencil", "highlight"):
+            self._path.append(ev.pos())
+        else:
             self._p2 = ev.pos()
-            self.update()
+        self.update()
 
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and self._drawing:
+        if ev.button() != Qt.MouseButton.LeftButton or not self._drawing:
+            return
+        self._drawing = False
+
+        if self._tool in ("pencil", "highlight"):
+            self._path.append(ev.pos())
+            self._commit_path()
+        else:
             self._p2 = ev.pos()
-            self._drawing = False
             self._commit()
-            self.update()
 
-    # ── internal helpers ──────────────────────────────────────────────────────
+        self.update()
 
-    def _apply_pen(self, painter: QPainter):
+    # ── drawing helpers ───────────────────────────────────────────────────────
+
+    def _apply_pen(self, p: QPainter, color: QColor | None = None,
+                   width: int | None = None):
         pen = QPen(
-            self._color, self._thickness,
+            color or self._color,
+            width or self._thickness,
             Qt.PenStyle.SolidLine,
             Qt.PenCapStyle.RoundCap,
             Qt.PenJoinStyle.RoundJoin,
         )
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_shape(self, p: QPainter, p1: QPoint, p2: QPoint):
-        if self._tool == "rect":
+        if p1 == p2:
+            return
+        t = self._tool
+        if t == "rect":
             p.drawRect(QRect(p1, p2).normalized())
-        else:
+        elif t == "ellipse":
+            p.drawEllipse(QRect(p1, p2).normalized())
+        elif t == "line":
+            p.drawLine(p1, p2)
+        else:  # arrow
             self._draw_arrow(p, p1, p2)
 
     def _draw_arrow(self, p: QPainter, p1: QPoint, p2: QPoint):
-        if p1 == p2:
-            return
         p.drawLine(p1, p2)
-
-        dx  = p2.x() - p1.x()
-        dy  = p2.y() - p1.y()
+        dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
         lng = math.hypot(dx, dy)
         if lng < 1:
             return
-
         ux, uy  = dx / lng, dy / lng
         head_sz = max(12, self._thickness * 4)
-        angle   = 0.45   # ~26°
-
-        ca, sa = math.cos(angle), math.sin(angle)
-
+        ca, sa  = math.cos(0.45), math.sin(0.45)
         lx = p2.x() - head_sz * (ux * ca - uy * sa)
         ly = p2.y() - head_sz * (uy * ca + ux * sa)
         rx = p2.x() - head_sz * (ux * ca + uy * sa)
         ry = p2.y() - head_sz * (uy * ca - ux * sa)
-
-        tip = QPolygon([p2, QPoint(int(lx), int(ly)), QPoint(int(rx), int(ry))])
         p.setBrush(QBrush(self._color))
-        p.drawPolygon(tip)
+        p.drawPolygon(QPolygon([p2, QPoint(int(lx), int(ly)), QPoint(int(rx), int(ry))]))
+
+    def _paint_path(self, p: QPainter, pts: list[QPoint]):
+        if len(pts) < 2:
+            return
+        if self._tool == "highlight":
+            c = QColor(self._color.red(), self._color.green(),
+                       self._color.blue(), 80)
+            pen = QPen(c, max(16, self._thickness * 6),
+                       Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        else:
+            pen = QPen(self._color, self._thickness,
+                       Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+
+    def _paint_step(self, p: QPainter, center: QPoint, n: int):
+        r = 13 + self._thickness
+        p.setBrush(QBrush(self._color))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(center, r, r)
+        p.setPen(QColor("white"))
+        p.setFont(QFont("Segoe UI", max(9, r - 4), QFont.Weight.Bold))
+        p.drawText(QRect(center.x() - r, center.y() - r, r * 2, r * 2),
+                   Qt.AlignmentFlag.AlignCenter, str(n))
+
+    # ── commit helpers ────────────────────────────────────────────────────────
 
     def _commit(self):
         if self._p1 == self._p2:
             return
         self._history.append(self._overlay.copy())
-        painter = QPainter(self._overlay)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._apply_pen(painter)
-        self._draw_shape(painter, self._p1, self._p2)
-        painter.end()
+        pa = QPainter(self._overlay)
+        pa.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._apply_pen(pa)
+        self._draw_shape(pa, self._p1, self._p2)
+        pa.end()
+
+    def _commit_path(self):
+        if len(self._path) < 2:
+            return
+        self._history.append(self._overlay.copy())
+        pa = QPainter(self._overlay)
+        pa.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_path(pa, self._path)
+        pa.end()
+        self._path = []
+
+    def _commit_step(self, center: QPoint):
+        self._history.append(self._overlay.copy())
+        pa = QPainter(self._overlay)
+        pa.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_step(pa, center, self._step_n)
+        pa.end()
+        self._step_n += 1
+        self.update()
+
+    # ── text tool ─────────────────────────────────────────────────────────────
+
+    def _start_text_input(self, pos: QPoint):
+        te = QLineEdit(self)
+        te.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        te.setStyleSheet(
+            f"QLineEdit {{ color: {self._color.name()};"
+            "  background: rgba(0,0,0,160);"
+            f"  border: 1px dashed {self._color.name()};"
+            "  border-radius: 3px; padding: 2px 6px; }}"
+        )
+        te.setMinimumWidth(160)
+        te.move(pos)
+        te.resize(200, 32)
+        te.show()
+        te.setFocus()
+        self._text_widget = te
+        self._text_pos    = pos
+        te.returnPressed.connect(self._commit_text)
+
+    def _commit_text(self):
+        if not self._text_widget:
+            return
+        text = self._text_widget.text().strip()
+        pos  = self._text_pos
+        self._text_widget.hide()
+        self._text_widget.deleteLater()
+        self._text_widget = None
+        if text:
+            self._history.append(self._overlay.copy())
+            pa = QPainter(self._overlay)
+            pa.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pa.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+            # subtle shadow
+            pa.setPen(QColor(0, 0, 0, 160))
+            pa.drawText(pos + QPoint(1, 1), text)
+            pa.setPen(self._color)
+            pa.drawText(pos, text)
+            pa.end()
+            self.update()
 
     # ── public ────────────────────────────────────────────────────────────────
 
     def undo(self):
+        if self._text_widget:
+            self._text_widget.hide()
+            self._text_widget.deleteLater()
+            self._text_widget = None
+            return
         if self._history:
             self._overlay = self._history.pop()
             self.update()
 
     def merged_pixmap(self) -> QPixmap:
-        """Return the base screenshot with all annotations burned in."""
+        if self._text_widget:
+            self._commit_text()
         result = self._base.copy()
         p = QPainter(result)
         p.drawPixmap(0, 0, self._overlay)
@@ -373,10 +523,11 @@ QPushButton {
     color: #e8e8e8;
     border: 2px solid transparent;
     border-radius: 6px;
-    padding: 5px 12px;
+    padding: 4px 9px;
     font-family: 'Segoe UI';
     font-size: 13px;
     font-weight: 500;
+    min-width: 0px;
 }
 QPushButton:hover   { background: #3a3a3a; }
 QPushButton:checked { border: 2px solid #0078d4; background: #1a3a5c; }
@@ -401,10 +552,19 @@ def _sep():
     return s
 
 
+def _tool_btn(label: str, tip: str) -> QPushButton:
+    b = QPushButton(label)
+    b.setCheckable(True)
+    b.setToolTip(tip)
+    b.setStyleSheet(_BTN)
+    return b
+
+
 class AnnotationWindow(QMainWindow):
     def __init__(self, pixmap: QPixmap):
         super().__init__()
         self.setWindowTitle("SnapMark — Annotate")
+        self._pinned = True
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -412,112 +572,132 @@ class AnnotationWindow(QMainWindow):
 
         self._canvas = Canvas(pixmap)
 
-        # ── toolbar ──────────────────────────────────────────────────────────
+        # ── tool buttons ─────────────────────────────────────────────────────
+        self._tool_btns: dict[str, QPushButton] = {}
+        tools = [
+            ("rect",      "□",  "Rectangle (R)"),
+            ("ellipse",   "○",  "Ellipse (E)"),
+            ("line",      "╱",  "Line (L)"),
+            ("arrow",     "↗",  "Arrow (A)"),
+            ("pencil",    "✏",  "Pencil — freehand (P)"),
+            ("highlight", "▬",  "Highlight (H)"),
+            ("text",      "T",  "Text (T)"),
+            ("step",      "①",  "Step number — click to place (S)"),
+        ]
+        for key, icon, tip in tools:
+            b = _tool_btn(icon, tip)
+            b.clicked.connect(lambda _, k=key: self._set_tool(k))
+            self._tool_btns[key] = b
+        self._tool_btns["arrow"].setChecked(True)
+
+        # ── toolbar layout ────────────────────────────────────────────────────
         tb = QWidget()
-        tb.setStyleSheet(
-            "background: #222; border-bottom: 1px solid #3a3a3a;"
-        )
+        tb.setStyleSheet("background: #222; border-bottom: 1px solid #3a3a3a;")
         tbl = QHBoxLayout(tb)
-        tbl.setContentsMargins(10, 7, 10, 7)
-        tbl.setSpacing(6)
+        tbl.setContentsMargins(8, 6, 8, 6)
+        tbl.setSpacing(4)
 
-        # tool buttons
-        self._b_arrow = QPushButton("↗  Arrow")
-        self._b_arrow.setCheckable(True)
-        self._b_arrow.setChecked(True)
-        self._b_arrow.setStyleSheet(_BTN)
-        self._b_arrow.clicked.connect(lambda: self._set_tool("arrow"))
+        for b in self._tool_btns.values():
+            tbl.addWidget(b)
 
-        self._b_rect = QPushButton("□  Rectangle")
-        self._b_rect.setCheckable(True)
-        self._b_rect.setStyleSheet(_BTN)
-        self._b_rect.clicked.connect(lambda: self._set_tool("rect"))
+        tbl.addWidget(_sep())
 
         # color swatch
         self._color_btn = QPushButton()
-        self._color_btn.setFixedSize(30, 30)
-        self._color_btn.setToolTip("Pick annotation color")
+        self._color_btn.setFixedSize(28, 28)
+        self._color_btn.setToolTip("Pick color")
         self._refresh_color_btn(QColor("#e53935"))
         self._color_btn.clicked.connect(self._pick_color)
+        tbl.addWidget(self._color_btn)
 
-        # stroke thickness
-        sz_lbl = QLabel("Size:")
-        sz_lbl.setStyleSheet(
-            "color: #aaa; font-family: 'Segoe UI'; font-size: 12px;"
-        )
+        # stroke size
         self._sz = QSpinBox()
         self._sz.setRange(1, 20)
         self._sz.setValue(3)
-        self._sz.setFixedWidth(56)
+        self._sz.setFixedWidth(52)
+        self._sz.setToolTip("Stroke size")
         self._sz.setStyleSheet(
             "QSpinBox { background:#2b2b2b; color:white; border:1px solid #555;"
-            " border-radius:4px; padding:2px 4px; font-size:13px; }"
-            "QSpinBox::up-button, QSpinBox::down-button { width:16px; }"
+            " border-radius:4px; padding:2px 4px; font-size:12px; }"
+            "QSpinBox::up-button, QSpinBox::down-button { width:14px; }"
         )
         self._sz.valueChanged.connect(lambda v: setattr(self._canvas, "thickness", v))
+        tbl.addWidget(self._sz)
 
-        # action buttons
-        btn_undo  = QPushButton("↩  Undo")
+        tbl.addWidget(_sep())
+
+        # reset step counter button
+        btn_rst = QPushButton("①→1")
+        btn_rst.setToolTip("Reset step counter back to 1")
+        btn_rst.setStyleSheet(_BTN)
+        btn_rst.clicked.connect(self._canvas.reset_step)
+        tbl.addWidget(btn_rst)
+
+        tbl.addWidget(_sep())
+
+        btn_undo = QPushButton("↩")
+        btn_undo.setToolTip("Undo  (Ctrl+Z)")
         btn_undo.setStyleSheet(_BTN)
         btn_undo.clicked.connect(self._canvas.undo)
+        tbl.addWidget(btn_undo)
 
-        btn_copy  = QPushButton("📋  Copy")
+        tbl.addWidget(_sep())
+
+        btn_copy = QPushButton("📋 Copy")
+        btn_copy.setToolTip("Copy to clipboard  (Ctrl+C)")
         btn_copy.setStyleSheet(_BTN)
         btn_copy.clicked.connect(self._copy)
+        tbl.addWidget(btn_copy)
 
-        btn_save  = QPushButton("💾  Save as…")
+        btn_save = QPushButton("💾 Save")
+        btn_save.setToolTip("Save as PNG / JPG  (Ctrl+S)")
         btn_save.setStyleSheet(_BTN)
         btn_save.clicked.connect(self._save)
+        tbl.addWidget(btn_save)
+
+        tbl.addWidget(_sep())
+
+        self._pin_btn = QPushButton("📌")
+        self._pin_btn.setToolTip("Always on top (currently ON)")
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.setChecked(True)
+        self._pin_btn.setStyleSheet(_BTN)
+        self._pin_btn.clicked.connect(self._toggle_pin)
+        tbl.addWidget(self._pin_btn)
 
         btn_close = QPushButton("✕")
+        btn_close.setToolTip("Close")
         btn_close.setStyleSheet(_BTN)
-        btn_close.setFixedWidth(32)
+        btn_close.setFixedWidth(28)
         btn_close.clicked.connect(self.close)
+        tbl.addWidget(btn_close)
 
-        for w in [
-            self._b_arrow, self._b_rect, _sep(),
-            self._color_btn, sz_lbl, self._sz, _sep(),
-            btn_undo, _sep(),
-            btn_copy, btn_save, _sep(),
-            btn_close,
-        ]:
-            tbl.addWidget(w)
         tbl.addStretch()
 
-        # shortcut label
-        hint = QLabel("  Ctrl+Z undo   ·   Ctrl+C copy   ·   Ctrl+S save")
-        hint.setStyleSheet(
-            "color: #555; font-family: 'Segoe UI'; font-size: 11px;"
-        )
-        tbl.addWidget(hint)
-
-        # ── scrollable canvas area ────────────────────────────────────────────
+        # ── scrollable canvas ─────────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidget(self._canvas)
         scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        scroll.setStyleSheet(
-            "QScrollArea { border: none; background: #141414; }"
-        )
+        scroll.setStyleSheet("QScrollArea { border: none; background: #141414; }")
 
         central = QWidget()
-        root    = QVBoxLayout(central)
+        root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(tb)
         root.addWidget(scroll)
         self.setCentralWidget(central)
 
-        # ── keyboard shortcuts ────────────────────────────────────────────────
-        # (using keyPressEvent so we don't need QShortcut)
-
         # ── window sizing ─────────────────────────────────────────────────────
+        canvas_sz = self._canvas.size()
         avail = QApplication.primaryScreen().availableGeometry()
-        w = min(pixmap.width()  + 24,  avail.width()  - 60)
-        h = min(pixmap.height() + 100, avail.height() - 60)
+        w = min(canvas_sz.width()  + 24,  avail.width()  - 60)
+        h = min(canvas_sz.height() + 110, avail.height() - 60)
         self.resize(w, h)
-        cx = avail.x() + (avail.width()  - w) // 2
-        cy = avail.y() + (avail.height() - h) // 2
-        self.move(cx, cy)
+        self.move(
+            avail.x() + (avail.width()  - w) // 2,
+            avail.y() + (avail.height() - h) // 2,
+        )
 
     # ── keyboard shortcuts ────────────────────────────────────────────────────
 
@@ -525,12 +705,25 @@ class AnnotationWindow(QMainWindow):
         mods = ev.modifiers()
         key  = ev.key()
         ctrl = Qt.KeyboardModifier.ControlModifier
-        if mods & ctrl and key == Qt.Key.Key_Z:
-            self._canvas.undo()
-        elif mods & ctrl and key == Qt.Key.Key_C:
-            self._copy()
-        elif mods & ctrl and key == Qt.Key.Key_S:
-            self._save()
+        key_map = {
+            Qt.Key.Key_Z: self._canvas.undo,
+            Qt.Key.Key_C: self._copy,
+            Qt.Key.Key_S: self._save,
+        }
+        tool_map = {
+            Qt.Key.Key_R: "rect",
+            Qt.Key.Key_E: "ellipse",
+            Qt.Key.Key_L: "line",
+            Qt.Key.Key_A: "arrow",
+            Qt.Key.Key_P: "pencil",
+            Qt.Key.Key_H: "highlight",
+            Qt.Key.Key_T: "text",
+            Qt.Key.Key_S: "step",
+        }
+        if mods & ctrl and key in key_map:
+            key_map[key]()
+        elif not (mods & ctrl) and key in tool_map:
+            self._set_tool(tool_map[key])
         else:
             super().keyPressEvent(ev)
 
@@ -538,8 +731,19 @@ class AnnotationWindow(QMainWindow):
 
     def _set_tool(self, tool: str):
         self._canvas.tool = tool
-        self._b_arrow.setChecked(tool == "arrow")
-        self._b_rect.setChecked(tool  == "rect")
+        for k, b in self._tool_btns.items():
+            b.setChecked(k == tool)
+
+    def _toggle_pin(self):
+        self._pinned = not self._pinned
+        flags = Qt.WindowType.Window
+        if self._pinned:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        tip = "Always on top (currently ON)" if self._pinned else "Always on top (currently OFF)"
+        self._pin_btn.setToolTip(tip)
+        self._pin_btn.setChecked(self._pinned)
+        self.setWindowFlags(flags)
+        self.show()
 
     def _refresh_color_btn(self, color: QColor):
         self._color_btn.setStyleSheet(_COLOR_BTN.format(color=color.name()))
