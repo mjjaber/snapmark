@@ -219,7 +219,7 @@ class SelectionOverlay(QWidget):
 class Canvas(QWidget):
     """
     Drawing canvas supporting:
-      rect · ellipse · line · arrow · pencil · highlight · text · step-number
+      rect · ellipse · line · arrow · pencil · highlight · blur · text · step-number
     """
 
     def __init__(self, pixmap: QPixmap):
@@ -289,6 +289,12 @@ class Canvas(QWidget):
                 self._paint_path(p, self._path)
             elif self._tool == "step":
                 self._paint_step(p, self._p1, self._step_n)
+            elif self._tool == "blur":
+                # live preview: dashed border over the drag region
+                sel = QRect(self._p1, self._p2).normalized()
+                p.setPen(QPen(QColor("#ffffff"), 2, Qt.PenStyle.DashLine))
+                p.setBrush(QColor(0, 0, 0, 40))
+                p.drawRect(sel)
             else:
                 self._apply_pen(p)
                 self._draw_shape(p, self._p1, self._p2)
@@ -343,6 +349,9 @@ class Canvas(QWidget):
         if self._tool in ("pencil", "highlight"):
             self._path.append(ev.pos())
             self._commit_path()
+        elif self._tool == "blur":
+            self._p2 = ev.pos()
+            self._commit_blur()
         else:
             self._p2 = ev.pos()
             self._commit()
@@ -373,6 +382,8 @@ class Canvas(QWidget):
             p.drawEllipse(QRect(p1, p2).normalized())
         elif t == "line":
             p.drawLine(p1, p2)
+        elif t == "blur":
+            pass  # handled separately in _commit_blur
         else:  # arrow
             self._draw_arrow(p, p1, p2)
 
@@ -440,6 +451,36 @@ class Canvas(QWidget):
         self._paint_path(pa, self._path)
         pa.end()
         self._path = []
+
+    def _commit_blur(self):
+        """Pixelate the selected region to hide sensitive content."""
+        rect = QRect(self._p1, self._p2).normalized()
+        if rect.width() < 4 or rect.height() < 4:
+            return
+        self._history.append(self._overlay.copy())
+
+        # Sample the base image (underneath any existing overlay)
+        merged = self._base.copy()
+        pa_m = QPainter(merged)
+        pa_m.drawPixmap(0, 0, self._overlay)
+        pa_m.end()
+        region = merged.copy(rect)
+
+        # Pixelate: shrink to ~10px blocks then enlarge back
+        block  = max(6, min(rect.width(), rect.height()) // 8)
+        sw     = max(1, rect.width()  // block)
+        sh     = max(1, rect.height() // block)
+        small  = region.scaled(sw, sh,
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.FastTransformation)
+        mosaic = small.scaled(rect.width(), rect.height(),
+                              Qt.AspectRatioMode.IgnoreAspectRatio,
+                              Qt.TransformationMode.FastTransformation)
+
+        pa = QPainter(self._overlay)
+        pa.drawPixmap(rect.topLeft(), mosaic)
+        pa.end()
+        self.update()
 
     def _commit_step(self, center: QPoint):
         self._history.append(self._overlay.copy())
@@ -519,41 +560,68 @@ class Canvas(QWidget):
 
 _BTN = """
 QPushButton {
-    background: #2b2b2b;
-    color: #e8e8e8;
-    border: 2px solid transparent;
-    border-radius: 6px;
-    padding: 4px 9px;
+    background: #2e2e2e;
+    color: #d4d4d4;
+    border: 1.5px solid #404040;
+    border-radius: 9px;
+    padding: 7px 14px;
     font-family: 'Segoe UI';
     font-size: 13px;
     font-weight: 500;
-    min-width: 0px;
+    min-height: 34px;
+    min-width: 48px;
 }
-QPushButton:hover   { background: #3a3a3a; }
-QPushButton:checked { border: 2px solid #0078d4; background: #1a3a5c; }
-QPushButton:pressed { background: #444; }
+QPushButton:hover {
+    background: #3c3c3c;
+    border-color: #606060;
+    color: #ffffff;
+}
+QPushButton:checked {
+    background: #0078d4;
+    border-color: #0078d4;
+    color: #ffffff;
+    font-weight: 700;
+}
+QPushButton:pressed { background: #005fa3; }
+"""
+
+_ACTION_BTN = """
+QPushButton {
+    background: #252525;
+    color: #c8c8c8;
+    border: 1.5px solid #383838;
+    border-radius: 9px;
+    padding: 7px 16px;
+    font-family: 'Segoe UI';
+    font-size: 13px;
+    min-height: 34px;
+}
+QPushButton:hover { background: #333; border-color: #555; color: white; }
+QPushButton:pressed { background: #1a1a1a; }
 """
 
 _COLOR_BTN = """
 QPushButton {{
     background: {color};
-    border: 2px solid #777;
-    border-radius: 6px;
+    border: 2px solid #606060;
+    border-radius: 9px;
+    min-width: 34px;
+    min-height: 34px;
 }}
-QPushButton:hover {{ border: 2px solid white; }}
+QPushButton:hover {{ border: 2px solid #ffffff; }}
 """
 
 
 def _sep():
     s = QFrame()
     s.setFrameShape(QFrame.Shape.VLine)
-    s.setFixedSize(1, 26)
-    s.setStyleSheet("background: #555;")
+    s.setFixedSize(1, 32)
+    s.setStyleSheet("background: #404040; margin: 0px 2px;")
     return s
 
 
-def _tool_btn(label: str, tip: str) -> QPushButton:
-    b = QPushButton(label)
+def _tool_btn(icon: str, label: str, tip: str) -> QPushButton:
+    b = QPushButton(f"{icon}  {label}")
     b.setCheckable(True)
     b.setToolTip(tip)
     b.setStyleSheet(_BTN)
@@ -575,27 +643,32 @@ class AnnotationWindow(QMainWindow):
         # ── tool buttons ─────────────────────────────────────────────────────
         self._tool_btns: dict[str, QPushButton] = {}
         tools = [
-            ("rect",      "□",  "Rectangle (R)"),
-            ("ellipse",   "○",  "Ellipse (E)"),
-            ("line",      "╱",  "Line (L)"),
-            ("arrow",     "↗",  "Arrow (A)"),
-            ("pencil",    "✏",  "Pencil — freehand (P)"),
-            ("highlight", "▬",  "Highlight (H)"),
-            ("text",      "T",  "Text (T)"),
-            ("step",      "①",  "Step number — click to place (S)"),
+            ("rect",      "□",  "Rect",      "Rectangle (R)"),
+            ("ellipse",   "○",  "Ellipse",   "Ellipse (E)"),
+            ("line",      "╱",  "Line",      "Straight Line (L)"),
+            ("arrow",     "↗",  "Arrow",     "Arrow (A)"),
+            ("pencil",    "✏",  "Pencil",    "Freehand Pencil (P)"),
+            ("highlight", "▬",  "Highlight", "Highlighter (H)"),
+            ("blur",      "⬚",  "Blur",      "Blur / Hide sensitive area (B)"),
+            ("text",      "T",  "Text",      "Add Text (T)"),
+            ("step",      "①",  "Step",      "Step Numbers — click to place (S)"),
         ]
-        for key, icon, tip in tools:
-            b = _tool_btn(icon, tip)
+        for key, icon, label, tip in tools:
+            b = _tool_btn(icon, label, tip)
             b.clicked.connect(lambda _, k=key: self._set_tool(k))
             self._tool_btns[key] = b
         self._tool_btns["arrow"].setChecked(True)
 
         # ── toolbar layout ────────────────────────────────────────────────────
         tb = QWidget()
-        tb.setStyleSheet("background: #222; border-bottom: 1px solid #3a3a3a;")
+        tb.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #282828, stop:1 #1e1e1e);"
+            "border-bottom: 1px solid #111;"
+        )
         tbl = QHBoxLayout(tb)
-        tbl.setContentsMargins(8, 6, 8, 6)
-        tbl.setSpacing(4)
+        tbl.setContentsMargins(12, 8, 12, 8)
+        tbl.setSpacing(5)
 
         for b in self._tool_btns.values():
             tbl.addWidget(b)
@@ -604,8 +677,8 @@ class AnnotationWindow(QMainWindow):
 
         # color swatch
         self._color_btn = QPushButton()
-        self._color_btn.setFixedSize(28, 28)
-        self._color_btn.setToolTip("Pick color")
+        self._color_btn.setFixedSize(36, 36)
+        self._color_btn.setToolTip("Pick annotation color")
         self._refresh_color_btn(QColor("#e53935"))
         self._color_btn.clicked.connect(self._pick_color)
         tbl.addWidget(self._color_btn)
@@ -614,51 +687,50 @@ class AnnotationWindow(QMainWindow):
         self._sz = QSpinBox()
         self._sz.setRange(1, 20)
         self._sz.setValue(3)
-        self._sz.setFixedWidth(52)
-        self._sz.setToolTip("Stroke size")
+        self._sz.setFixedWidth(58)
+        self._sz.setToolTip("Stroke thickness")
         self._sz.setStyleSheet(
-            "QSpinBox { background:#2b2b2b; color:white; border:1px solid #555;"
-            " border-radius:4px; padding:2px 4px; font-size:12px; }"
-            "QSpinBox::up-button, QSpinBox::down-button { width:14px; }"
+            "QSpinBox { background:#2e2e2e; color:white; border:1.5px solid #404040;"
+            " border-radius:7px; padding:4px 6px; font-size:13px; min-height:34px; }"
+            "QSpinBox::up-button, QSpinBox::down-button { width:16px; }"
         )
         self._sz.valueChanged.connect(lambda v: setattr(self._canvas, "thickness", v))
         tbl.addWidget(self._sz)
 
         tbl.addWidget(_sep())
 
-        # reset step counter button
-        btn_rst = QPushButton("①→1")
-        btn_rst.setToolTip("Reset step counter back to 1")
-        btn_rst.setStyleSheet(_BTN)
+        btn_rst = QPushButton("① → 1")
+        btn_rst.setToolTip("Reset step counter to 1")
+        btn_rst.setStyleSheet(_ACTION_BTN)
         btn_rst.clicked.connect(self._canvas.reset_step)
         tbl.addWidget(btn_rst)
 
         tbl.addWidget(_sep())
 
-        btn_undo = QPushButton("↩")
-        btn_undo.setToolTip("Undo  (Ctrl+Z)")
-        btn_undo.setStyleSheet(_BTN)
+        btn_undo = QPushButton("↩  Undo")
+        btn_undo.setToolTip("Undo last annotation  (Ctrl+Z)")
+        btn_undo.setStyleSheet(_ACTION_BTN)
         btn_undo.clicked.connect(self._canvas.undo)
         tbl.addWidget(btn_undo)
 
         tbl.addWidget(_sep())
 
-        btn_copy = QPushButton("📋 Copy")
+        btn_copy = QPushButton("📋  Copy")
         btn_copy.setToolTip("Copy to clipboard  (Ctrl+C)")
-        btn_copy.setStyleSheet(_BTN)
+        btn_copy.setStyleSheet(_ACTION_BTN)
         btn_copy.clicked.connect(self._copy)
         tbl.addWidget(btn_copy)
 
-        btn_save = QPushButton("💾 Save")
-        btn_save.setToolTip("Save as PNG / JPG  (Ctrl+S)")
-        btn_save.setStyleSheet(_BTN)
+        btn_save = QPushButton("💾  Save as…")
+        btn_save.setToolTip("Save PNG / JPG  (Ctrl+S)")
+        btn_save.setStyleSheet(_ACTION_BTN)
         btn_save.clicked.connect(self._save)
         tbl.addWidget(btn_save)
 
         tbl.addWidget(_sep())
 
-        self._pin_btn = QPushButton("📌")
-        self._pin_btn.setToolTip("Always on top (currently ON)")
+        self._pin_btn = QPushButton("📌  Pinned")
+        self._pin_btn.setToolTip("Window stays on top — click to unpin")
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(True)
         self._pin_btn.setStyleSheet(_BTN)
@@ -667,8 +739,8 @@ class AnnotationWindow(QMainWindow):
 
         btn_close = QPushButton("✕")
         btn_close.setToolTip("Close")
-        btn_close.setStyleSheet(_BTN)
-        btn_close.setFixedWidth(28)
+        btn_close.setStyleSheet(_ACTION_BTN)
+        btn_close.setFixedWidth(40)
         btn_close.clicked.connect(self.close)
         tbl.addWidget(btn_close)
 
@@ -717,6 +789,7 @@ class AnnotationWindow(QMainWindow):
             Qt.Key.Key_A: "arrow",
             Qt.Key.Key_P: "pencil",
             Qt.Key.Key_H: "highlight",
+            Qt.Key.Key_B: "blur",
             Qt.Key.Key_T: "text",
             Qt.Key.Key_S: "step",
         }
