@@ -653,16 +653,20 @@ QPushButton:hover   { background: rgba(255,255,255,0.08); color: #ffffff; }
 QPushButton:pressed { background: rgba(255,255,255,0.05); }
 """
 
-_COLOR_BTN = """
-QPushButton {{
-    background: {color};
-    border: 2px solid rgba(255,255,255,0.20);
-    border-radius: 6px;
-    min-width:  32px; max-width:  32px;
-    min-height: 32px; max-height: 32px;
-}}
-QPushButton:hover {{ border-color: rgba(255,255,255,0.65); }}
-"""
+def _make_color_icon(color: QColor, size: int = 14) -> QIcon:
+    """Small filled circle showing the current annotation color.
+    Rendered as a QIcon so the button matches the flat transparent style
+    of all other toolbar buttons — no oversized solid-fill square."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor(255, 255, 255, 55), 1.2))
+    p.setBrush(QBrush(color))
+    r = size // 2 - 1
+    p.drawEllipse(QPoint(size // 2, size // 2), r, r)
+    p.end()
+    return QIcon(pm)
 
 
 def _sep():
@@ -796,9 +800,10 @@ class AnnotationWindow(QMainWindow):
 
         # color swatch
         self._color_btn = QPushButton()
-        self._color_btn.setFixedSize(30, 30)
         self._color_btn.setToolTip("Annotation color")
-        self._refresh_color_btn(QColor("#e53935"))
+        self._color_btn.setStyleSheet(_ACT_BTN_SS)
+        self._color_btn.setIcon(_make_color_icon(QColor("#e53935")))
+        self._color_btn.setIconSize(QSize(14, 14))
         self._color_btn.clicked.connect(self._pick_color)
         tbl.addWidget(self._color_btn)
 
@@ -947,7 +952,7 @@ class AnnotationWindow(QMainWindow):
         self.show()
 
     def _refresh_color_btn(self, color: QColor):
-        self._color_btn.setStyleSheet(_COLOR_BTN.format(color=color.name()))
+        self._color_btn.setIcon(_make_color_icon(color))
 
     def _pick_color(self):
         c = QColorDialog.getColor(self._canvas.color, self, "Annotation Color")
