@@ -470,19 +470,21 @@ class Canvas(QWidget):
             return
         self._history.append(self._overlay.copy())
 
-        # Work in logical pixel space so all coords match the overlay.
-        # Scale the physical base down to logical size first, then composite
-        # with the existing overlay to sample the correct pixels.
+        # Work in plain pixel space so coords match mouse events (logical px).
+        # QPixmap.scaled() preserves the source DPR in Qt6 — if we leave DPR=2
+        # on base_logical, QPainter opens in a shrunken logical coord system and
+        # copy() treats the mouse-event rect as physical offsets → wrong region.
+        # Stripping DPR to 1.0 makes pixel coords == logical coords throughout.
         base_logical = self._base.scaled(
             self._logical_size,
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        merged = base_logical
-        pa_m = QPainter(merged)
+        base_logical.setDevicePixelRatio(1.0)   # ← fix: plain pixel coords
+        pa_m = QPainter(base_logical)
         pa_m.drawPixmap(0, 0, self._overlay)
         pa_m.end()
-        region = merged.copy(rect)
+        region = base_logical.copy(rect)
 
         # Pixelate: shrink to ~10px blocks then enlarge back
         block  = max(6, min(rect.width(), rect.height()) // 8)
@@ -567,9 +569,11 @@ class Canvas(QWidget):
         if self._text_widget:
             self._commit_text()
         result = self._base.copy()
-        # The overlay lives in logical pixel space; scale it up to the full
-        # physical resolution of the base before compositing so annotations
-        # are rendered at maximum quality in the output.
+        # Strip DPR so QPainter on result uses physical pixel coordinates.
+        # Leaving DPR > 1 would make the painter's logical coord system
+        # smaller than the physical canvas, clipping annotations to a corner.
+        result.setDevicePixelRatio(1.0)
+        # Scale logical overlay up to physical resolution before compositing.
         overlay_scaled = self._overlay.scaled(
             result.width(), result.height(),
             Qt.AspectRatioMode.IgnoreAspectRatio,
