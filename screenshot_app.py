@@ -586,63 +586,87 @@ class Canvas(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── shared styles ─────────────────────────────────────────────────────────────
-#  Tool buttons  — icon only, fixed square, tooltip shows full name
-_TOOL_BTN_SS = """
-QPushButton {
-    background: #2c2c2c;
-    color: #bbbbbb;
-    border: 1px solid #3e3e3e;
+# v1.4 — Fluent Design icon buttons
+#   • Uses Segoe Fluent Icons (Win 11) / Segoe MDL2 Assets (Win 10) — both ship
+#     with Windows, no extra files needed.
+#   • Transparent backgrounds, blue glow on active tool (matches Snipping Tool)
+#   • 40×40 px buttons with 18 px icons
+
+_ICON_FONT = "'Segoe Fluent Icons', 'Segoe MDL2 Assets'"
+
+# Tool toggle buttons (rect, ellipse, arrow …)
+_TOOL_BTN_SS = f"""
+QPushButton {{
+    background: transparent;
+    color: #c8c8c8;
+    border: 1px solid transparent;
     border-radius: 6px;
-    font-family: 'Segoe UI Symbol', 'Segoe UI';
-    font-size: 15px;
-    min-width:  32px;
-    max-width:  32px;
-    min-height: 30px;
-    max-height: 30px;
+    font-family: {_ICON_FONT};
+    font-size: 18px;
+    min-width:  40px; max-width:  40px;
+    min-height: 40px; max-height: 40px;
     padding: 0px;
-}
-QPushButton:hover   { background: #3a3a3a; color: #ffffff; border-color: #5a5a5a; }
-QPushButton:checked { background: #0078d4; color: #ffffff; border-color: #0078d4; }
-QPushButton:pressed { background: #005fa3; }
+}}
+QPushButton:hover   {{ background: rgba(255,255,255,0.08); color: #ffffff; }}
+QPushButton:checked {{ background: rgba(0,120,212,0.20); color: #4cc2ff;
+                       border-color: rgba(0,120,212,0.55); }}
+QPushButton:pressed {{ background: rgba(255,255,255,0.05); }}
 """
 
-#  Action buttons — short text labels
+# Action icon buttons (undo, copy, save, pin, close)
+_ACT_BTN_SS = f"""
+QPushButton {{
+    background: transparent;
+    color: #c8c8c8;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-family: {_ICON_FONT};
+    font-size: 18px;
+    min-width:  40px; max-width:  40px;
+    min-height: 40px; max-height: 40px;
+    padding: 0px;
+}}
+QPushButton:hover   {{ background: rgba(255,255,255,0.08); color: #ffffff; }}
+QPushButton:checked {{ background: rgba(0,120,212,0.20); color: #4cc2ff;
+                       border-color: rgba(0,120,212,0.55); }}
+QPushButton:pressed {{ background: rgba(255,255,255,0.05); }}
+"""
+
+# Text-label buttons (step reset "①→1")
 _BTN = """
 QPushButton {
-    background: #2c2c2c;
-    color: #bbbbbb;
-    border: 1px solid #3e3e3e;
+    background: transparent;
+    color: #c8c8c8;
+    border: 1px solid transparent;
     border-radius: 6px;
     font-family: 'Segoe UI';
     font-size: 12px;
     font-weight: 500;
-    min-height: 30px;
-    padding: 0px 11px;
+    min-height: 40px;
+    padding: 0px 12px;
 }
-QPushButton:hover   { background: #3a3a3a; color: #ffffff; border-color: #5a5a5a; }
-QPushButton:checked { background: #0078d4; color: #ffffff; border-color: #0078d4; }
-QPushButton:pressed { background: #1e1e1e; }
+QPushButton:hover   { background: rgba(255,255,255,0.08); color: #ffffff; }
+QPushButton:pressed { background: rgba(255,255,255,0.05); }
 """
 
 _COLOR_BTN = """
 QPushButton {{
     background: {color};
-    border: 2px solid #555555;
+    border: 2px solid rgba(255,255,255,0.20);
     border-radius: 6px;
-    min-width:  30px;
-    max-width:  30px;
-    min-height: 30px;
-    max-height: 30px;
+    min-width:  32px; max-width:  32px;
+    min-height: 32px; max-height: 32px;
 }}
-QPushButton:hover {{ border-color: #ffffff; }}
+QPushButton:hover {{ border-color: rgba(255,255,255,0.65); }}
 """
 
 
 def _sep():
+    """Thin vertical divider between toolbar groups."""
     s = QFrame()
     s.setFrameShape(QFrame.Shape.VLine)
-    s.setFixedSize(1, 22)
-    s.setStyleSheet("background: #444444;")
+    s.setFixedSize(1, 24)
+    s.setStyleSheet("background: rgba(255,255,255,0.12);")
     return s
 
 
@@ -662,23 +686,23 @@ class AnnotationWindow(QMainWindow):
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setStyleSheet("background: #1a1a1a;")
+        self.setStyleSheet("background: #1e1e1e;")
 
         self._canvas = Canvas(pixmap)
 
         # ── tool buttons ─────────────────────────────────────────────────────
-        # Using clean Unicode symbols — no emoji (they render poorly in Qt/Win)
+        # Segoe Fluent Icons codepoints (built-in on Windows 10/11 — no files needed)
         self._tool_btns: dict[str, QPushButton] = {}
         tools = [
-            ("rect",      "□",  "Rectangle  (R)"),
-            ("ellipse",   "○",  "Ellipse  (E)"),
-            ("line",      "╱",  "Straight Line  (L)"),
-            ("arrow",     "↗",  "Arrow  (A)"),
-            ("pencil",    "✎",  "Pencil — freehand  (P)"),
-            ("highlight", "▬",  "Highlighter  (H)"),
-            ("blur",      "▦",  "Blur / redact sensitive area  (B)"),
-            ("text",      "T",  "Add Text  (T)"),
-            ("step",      "①",  "Step numbers — click to place  (S)"),
+            ("rect",      "",  "Rectangle  (R)"),        # RectangularClipping
+            ("ellipse",   "",  "Ellipse  (E)"),           # CircleRing
+            ("line",      "",  "Straight Line  (L)"),     # Draw
+            ("arrow",     "",  "Arrow  (A)"),             # InkingTool
+            ("pencil",    "",  "Pencil — freehand  (P)"), # Pencil
+            ("highlight", "",  "Highlighter  (H)"),       # Marker
+            ("blur",      "",  "Blur / Redact  (B)"),     # ClippingTool
+            ("text",      "",  "Add Text  (T)"),           # Font
+            ("step",      "",  "Step Numbers  (S)"),      # CircleFill
         ]
         for key, sym, tip in tools:
             b = _tool_btn(sym, tip)
@@ -688,10 +712,10 @@ class AnnotationWindow(QMainWindow):
 
         # ── toolbar ───────────────────────────────────────────────────────────
         tb = QWidget()
-        tb.setStyleSheet("background: #232323; border-bottom: 1px solid #383838;")
+        tb.setStyleSheet("background: #1e1e1e; border-bottom: 1px solid #2d2d2d;")
         tbl = QHBoxLayout(tb)
-        tbl.setContentsMargins(10, 7, 10, 7)
-        tbl.setSpacing(3)
+        tbl.setContentsMargins(12, 5, 12, 5)
+        tbl.setSpacing(2)
 
         for b in self._tool_btns.values():
             tbl.addWidget(b)
@@ -714,12 +738,12 @@ class AnnotationWindow(QMainWindow):
         self._sz = QSpinBox()
         self._sz.setRange(1, 20)
         self._sz.setValue(3)
-        self._sz.setFixedWidth(50)
+        self._sz.setFixedWidth(54)
         self._sz.setToolTip("Stroke thickness")
         self._sz.setStyleSheet(
-            "QSpinBox { background:#2c2c2c; color:#cccccc; border:1px solid #3e3e3e;"
-            " border-radius:6px; padding:2px 4px; font-size:12px; min-height:28px; }"
-            "QSpinBox::up-button, QSpinBox::down-button { width:14px; }"
+            "QSpinBox { background:#2a2a2a; color:#cccccc; border:1px solid #3a3a3a;"
+            " border-radius:6px; padding:2px 4px; font-size:13px; min-height:32px; }"
+            "QSpinBox::up-button, QSpinBox::down-button { width:16px; }"
         )
         self._sz.valueChanged.connect(lambda v: setattr(self._canvas, "thickness", v))
         tbl.addWidget(self._sz)
@@ -728,54 +752,47 @@ class AnnotationWindow(QMainWindow):
         tbl.addWidget(_sep())
         tbl.addSpacing(4)
 
-        btn_rst = QPushButton("①→1")
-        btn_rst.setToolTip("Reset step counter to 1")
-        btn_rst.setStyleSheet(_BTN)
-        btn_rst.clicked.connect(self._canvas.reset_step)
-        tbl.addWidget(btn_rst)
-
-        tbl.addSpacing(4)
-        tbl.addWidget(_sep())
-        tbl.addSpacing(4)
-
-        btn_undo = QPushButton("Undo")
+        # Undo — Segoe Fluent
+        btn_undo = QPushButton("")
         btn_undo.setToolTip("Undo  (Ctrl+Z)")
-        btn_undo.setStyleSheet(_BTN)
+        btn_undo.setStyleSheet(_ACT_BTN_SS)
         btn_undo.clicked.connect(self._canvas.undo)
         tbl.addWidget(btn_undo)
 
-        tbl.addSpacing(4)
+        tbl.addSpacing(2)
         tbl.addWidget(_sep())
-        tbl.addSpacing(4)
+        tbl.addSpacing(2)
 
-        btn_copy = QPushButton("Copy")
+        # Copy —    Save — 
+        btn_copy = QPushButton("")
         btn_copy.setToolTip("Copy to clipboard  (Ctrl+C)")
-        btn_copy.setStyleSheet(_BTN)
+        btn_copy.setStyleSheet(_ACT_BTN_SS)
         btn_copy.clicked.connect(self._copy)
         tbl.addWidget(btn_copy)
 
-        btn_save = QPushButton("Save")
+        btn_save = QPushButton("")
         btn_save.setToolTip("Save as PNG / JPG  (Ctrl+S)")
-        btn_save.setStyleSheet(_BTN)
+        btn_save.setStyleSheet(_ACT_BTN_SS)
         btn_save.clicked.connect(self._save)
         tbl.addWidget(btn_save)
 
-        tbl.addSpacing(4)
+        tbl.addSpacing(2)
         tbl.addWidget(_sep())
-        tbl.addSpacing(4)
+        tbl.addSpacing(2)
 
-        self._pin_btn = QPushButton("Pin")
-        self._pin_btn.setToolTip("Always on top (ON) — click to toggle")
+        # Pin —  (pinned) /  (unpinned)
+        self._pin_btn = QPushButton("")
+        self._pin_btn.setToolTip("Always on top — ON")
         self._pin_btn.setCheckable(True)
         self._pin_btn.setChecked(True)
-        self._pin_btn.setStyleSheet(_BTN)
+        self._pin_btn.setStyleSheet(_ACT_BTN_SS)
         self._pin_btn.clicked.connect(self._toggle_pin)
         tbl.addWidget(self._pin_btn)
 
-        btn_close = QPushButton("×")
+        # Close — 
+        btn_close = QPushButton("")
         btn_close.setToolTip("Close")
-        btn_close.setStyleSheet(_BTN)
-        btn_close.setFixedWidth(30)
+        btn_close.setStyleSheet(_ACT_BTN_SS)
         btn_close.clicked.connect(self.close)
         tbl.addWidget(btn_close)
 
@@ -785,7 +802,11 @@ class AnnotationWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidget(self._canvas)
         scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #141414; }")
+        scroll.setStyleSheet("QScrollArea { border: none; background: #141414; }"
+                             " QScrollBar:vertical { background: #1e1e1e; width: 8px; border-radius: 4px; }"
+                             " QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 4px; }"
+                             " QScrollBar:horizontal { background: #1e1e1e; height: 8px; border-radius: 4px; }"
+                             " QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 4px; }")
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -847,7 +868,9 @@ class AnnotationWindow(QMainWindow):
         flags = Qt.WindowType.Window
         if self._pinned:
             flags |= Qt.WindowType.WindowStaysOnTopHint
-        tip = "Always on top (currently ON)" if self._pinned else "Always on top (currently OFF)"
+        # Swap icon: E718 = Pin (pinned), E77A = Unpin (unpinned)
+        self._pin_btn.setText("" if self._pinned else "")
+        tip = "Always on top — ON" if self._pinned else "Always on top — OFF"
         self._pin_btn.setToolTip(tip)
         self._pin_btn.setChecked(self._pinned)
         self.setWindowFlags(flags)
@@ -965,6 +988,8 @@ class SnapMarkApp:
         pixmap = QPixmap.fromImage(img)
         # Tag the pixmap with its DPR so Canvas can display it at logical size
         pixmap.setDevicePixelRatio(dpr)
+        # Auto-copy the raw capture to clipboard immediately
+        QApplication.clipboard().setPixmap(pixmap)
         win = AnnotationWindow(pixmap)
         win.show()
         self._windows.append(win)
