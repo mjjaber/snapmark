@@ -16,7 +16,7 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
-    QPushButton, QSpinBox, QLabel, QLineEdit,
+    QPushButton, QLabel, QLineEdit,
     QSystemTrayIcon, QMenu,
     QFileDialog, QColorDialog,
     QScrollArea, QFrame,
@@ -809,19 +809,61 @@ class AnnotationWindow(QMainWindow):
 
         tbl.addSpacing(3)
 
-        # stroke size
-        self._sz = QSpinBox()
-        self._sz.setRange(1, 20)
-        self._sz.setValue(3)
-        self._sz.setFixedWidth(54)
-        self._sz.setToolTip("Stroke thickness")
-        self._sz.setStyleSheet(
-            "QSpinBox { background:#2a2a2a; color:#cccccc; border:1px solid #3a3a3a;"
-            " border-radius:6px; padding:2px 4px; font-size:13px; min-height:32px; }"
-            "QSpinBox::up-button, QSpinBox::down-button { width:16px; }"
+        # stroke size — compact  −  [n]  +  row, no QSpinBox (its arrows can't
+        # be cleanly themed without external image files)
+        _MINI = """
+QPushButton {
+    background: transparent; color: #c8c8c8; border: none;
+    font-family: 'Segoe UI'; font-size: 16px; font-weight: 300;
+    min-width: 22px; max-width: 22px;
+    min-height: 40px; max-height: 40px;
+    padding: 0;
+}
+QPushButton:hover   { color: #ffffff; background: rgba(255,255,255,0.08);
+                      border-radius: 5px; }
+QPushButton:pressed { background: rgba(255,255,255,0.05); border-radius: 5px; }
+"""
+        self._sz_value = 3
+
+        btn_sz_dec = QPushButton("−")
+        btn_sz_dec.setStyleSheet(_MINI)
+        btn_sz_dec.setToolTip("Decrease stroke thickness")
+
+        self._sz_label = QLabel("3")
+        self._sz_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sz_label.setFixedWidth(18)
+        self._sz_label.setStyleSheet(
+            "QLabel { color: #c8c8c8; font-family: 'Segoe UI'; font-size: 13px; }"
         )
-        self._sz.valueChanged.connect(lambda v: setattr(self._canvas, "thickness", v))
-        tbl.addWidget(self._sz)
+
+        btn_sz_inc = QPushButton("+")
+        btn_sz_inc.setStyleSheet(_MINI)
+        btn_sz_inc.setToolTip("Increase stroke thickness")
+
+        def _sz_dec():
+            v = max(1, self._sz_value - 1)
+            self._sz_value = v
+            self._sz_label.setText(str(v))
+            self._canvas.thickness = v
+
+        def _sz_inc():
+            v = min(20, self._sz_value + 1)
+            self._sz_value = v
+            self._sz_label.setText(str(v))
+            self._canvas.thickness = v
+
+        btn_sz_dec.clicked.connect(_sz_dec)
+        btn_sz_inc.clicked.connect(_sz_inc)
+
+        sz_row = QWidget()
+        sz_row.setStyleSheet("background: transparent;")
+        sz_layout = QHBoxLayout(sz_row)
+        sz_layout.setContentsMargins(0, 0, 0, 0)
+        sz_layout.setSpacing(1)
+        sz_layout.addWidget(btn_sz_dec)
+        sz_layout.addWidget(self._sz_label)
+        sz_layout.addWidget(btn_sz_inc)
+        tbl.addWidget(sz_row)
 
         tbl.addSpacing(4)
         tbl.addWidget(_sep())
