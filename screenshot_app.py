@@ -678,14 +678,71 @@ def _tool_btn(symbol: str, tip: str) -> QPushButton:
     return b
 
 
+def _make_anno_icon(name: str, size: int = 20) -> QIcon:
+    """
+    Custom-drawn icons for tools that have no suitable Segoe Fluent glyph:
+      line, arrow, blur, step.
+    Drawn in the same #c8c8c8 colour as the Fluent icon buttons so they blend in.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    c = QColor("#c8c8c8")
+
+    if name == "line":
+        # Diagonal line bottom-left → top-right
+        p.setPen(QPen(c, 2.0, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(3, size - 3, size - 3, 3)
+
+    elif name == "arrow":
+        # Same diagonal line + filled arrowhead at the tip
+        p.setPen(QPen(c, 2.0, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawLine(4, size - 4, size - 5, 5)
+        tip   = QPoint(size - 4, 4)
+        left  = QPoint(size - 4, 4 + 8)
+        right = QPoint(size - 4 - 8, 4)
+        p.setBrush(QBrush(c))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPolygon(QPolygon([tip, left, right]))
+
+    elif name == "blur":
+        # 3 × 3 mosaic tiles — visually suggests pixelation / redaction
+        tile = (size - 4) // 3
+        for row in range(3):
+            for col in range(3):
+                alpha = 210 if (row + col) % 2 == 0 else 80
+                p.fillRect(
+                    2 + col * tile, 2 + row * tile,
+                    tile - 1, tile - 1,
+                    QColor(c.red(), c.green(), c.blue(), alpha),
+                )
+
+    elif name == "step":
+        # Circle outline with "1" — conveys numbered step markers
+        r  = size // 2 - 2
+        cx = cy = size // 2
+        p.setPen(QPen(c, 1.8))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPoint(cx, cy), r, r)
+        p.setPen(c)
+        f = QFont("Segoe UI", max(6, size // 3), QFont.Weight.Bold)
+        p.setFont(f)
+        p.drawText(QRect(0, 0, size, size),
+                   Qt.AlignmentFlag.AlignCenter, "1")
+
+    p.end()
+    return QIcon(pm)
+
+
 class AnnotationWindow(QMainWindow):
     def __init__(self, pixmap: QPixmap):
         super().__init__()
         self.setWindowTitle("SnapMark — Annotate")
-        self._pinned = True
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self._pinned = False
+        self.setWindowFlags(Qt.WindowType.Window)
         self.setStyleSheet("background: #1e1e1e;")
 
         self._canvas = Canvas(pixmap)
@@ -708,6 +765,15 @@ class AnnotationWindow(QMainWindow):
             b = _tool_btn(sym, tip)
             b.clicked.connect(lambda _, k=key: self._set_tool(k))
             self._tool_btns[key] = b
+
+        # Replace Fluent-font glyphs with custom-drawn icons for the four tools
+        # that don't have a suitable glyph in the font (line, arrow, blur, step).
+        for name in ("line", "arrow", "blur", "step"):
+            btn = self._tool_btns[name]
+            btn.setText("")
+            btn.setIcon(_make_anno_icon(name, 20))
+            btn.setIconSize(QSize(20, 20))
+
         self._tool_btns["arrow"].setChecked(True)
 
         # ── toolbar ───────────────────────────────────────────────────────────
@@ -781,10 +847,10 @@ class AnnotationWindow(QMainWindow):
         tbl.addSpacing(2)
 
         # Pin —  (pinned) /  (unpinned)
-        self._pin_btn = QPushButton("")
-        self._pin_btn.setToolTip("Always on top — ON")
+        self._pin_btn = QPushButton("")
+        self._pin_btn.setToolTip("Always on top — OFF")
         self._pin_btn.setCheckable(True)
-        self._pin_btn.setChecked(True)
+        self._pin_btn.setChecked(False)
         self._pin_btn.setStyleSheet(_ACT_BTN_SS)
         self._pin_btn.clicked.connect(self._toggle_pin)
         tbl.addWidget(self._pin_btn)
